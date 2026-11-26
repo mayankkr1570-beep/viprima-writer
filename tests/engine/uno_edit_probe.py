@@ -51,15 +51,27 @@ def main():
             require(doc is not None, "Writer document creation failed")
             text = doc.Text
             cursor = text.createTextCursor()
+            styles = doc.StyleFamilies.getByName("ParagraphStyles")
+            print("Available paragraph styles:", styles.ElementNames, flush=True)
+            require(styles.hasByName("Heading 1"), "Heading 1 style unavailable")
+            body_style = "ViPrima Probe Body"
+            styles.insertByName(body_style, doc.createInstance("com.sun.star.style.ParagraphStyle"))
             cursor.ParaStyleName = "Heading 1"
             text.insertString(cursor, "ViPrima Writer UNO probe", False)
             text.insertControlCharacter(cursor, uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"), False)
-            cursor.ParaStyleName = "Text Body"
-            cursor.CharWeight = 150.0
+            cursor.gotoEnd(False)
+            cursor.ParaStyleName = body_style
             text.insertString(cursor, "Edited through UNO", False)
-            cursor.CharWeight = 100.0
+            cursor.gotoEnd(False)
+            require(cursor.goLeft(len("Edited through UNO"), True), "Cannot select inserted body text")
+            cursor.CharWeight = 150.0
+            require(cursor.CharWeight >= 150.0, "Bold formatting failed")
+            cursor.gotoEnd(False)
             text.insertControlCharacter(cursor, uno.getConstantByName("com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK"), False)
-            page = doc.StyleFamilies.getByName("PageStyles").getByName("Standard")
+            page_styles = doc.StyleFamilies.getByName("PageStyles")
+            page_name = cursor.PageStyleName
+            require(page_styles.hasByName(page_name), "Active page style unavailable: " + page_name)
+            page = page_styles.getByName(page_name)
             page.HeaderIsOn = True
             page.HeaderText.String = "ViPrima test header"
             page.FooterIsOn = True
