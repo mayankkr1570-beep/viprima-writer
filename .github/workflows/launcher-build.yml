@@ -1,0 +1,32 @@
+name: M2 - Development launcher build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/launcher-build.yml'
+      - 'src/windows/launcher.cpp'
+permissions:
+  contents: read
+jobs:
+  launcher:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Compile native launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'VS2022 missing' }
+          $dev = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          New-Item -ItemType Directory -Force out | Out-Null
+          $command = 'call "' + $dev + '" -arch=x64 -host_arch=x64 && cl /nologo /std:c++17 /EHsc /W4 /O2 /MT src\windows\launcher.cpp /Fe:out\ViPrimaWriter.exe /link /SUBSYSTEM:WINDOWS shell32.lib user32.lib'
+          & cmd.exe /d /c $command
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path out\ViPrimaWriter.exe)) { throw 'Launcher compilation failed' }
+          Get-FileHash out\ViPrimaWriter.exe -Algorithm SHA256
+          'Development launcher compiled; requires separately built runtime. Not an installer or usable standalone application.' >> $env:GITHUB_STEP_SUMMARY
