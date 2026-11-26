@@ -1,0 +1,49 @@
+name: M1c - Native build prerequisites
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-build-preflight.yml'
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Inspect native compiler and WSL readiness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (!(Test-Path $vswhere)) { throw 'vswhere missing' }
+          $vs = & $vswhere -all -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json
+          $vs | Select-Object installationVersion,installationPath | Format-Table
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name,Used,Free
+          $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
+          if ($wsl) {
+            & wsl.exe --status
+            $wslStatus = $LASTEXITCODE
+            & wsl.exe --list --quiet
+            $wslList = $LASTEXITCODE
+          } else { $wslStatus = -1; $wslList = -1 }
+          $hasVS2022 = @($vs | Where-Object { $_.installationVersion -like '17.*' }).Count -gt 0
+          "VS 2022 C++ available: $hasVS2022" >> $env:GITHUB_STEP_SUMMARY
+          "WSL status exit code: $wslStatus; distro list exit code: $wslList" >> $env:GITHUB_STEP_SUMMARY
+          'Inventory only: no full native engine compilation attempted.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Resolve evaluated upstream source revision
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $revision = '861effc5289d539f15c4c18d1ba8579ffd78728b'
+          $commit = Invoke-RestMethod -Headers @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json'} -Uri "https://api.github.com/repos/LibreOffice/core/commits/$revision"
+          if ($commit.sha -ne $revision) { throw 'Upstream revision not resolved' }
+          foreach ($path in @('README.md','configure.ac','sw/uiconfig/swriter/ui/notebookbar.ui','COPYING')) {
+            $item = Invoke-RestMethod -Headers @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json'} -Uri "https://api.github.com/repos/LibreOffice/core/contents/${path}?ref=$revision"
+            if ($item.type -ne 'file') { throw "Missing upstream file: $path" }
+            "$path : $($item.sha)" | Write-Output
+          }
+          "Upstream source revision resolved: $revision" >> $env:GITHUB_STEP_SUMMARY
