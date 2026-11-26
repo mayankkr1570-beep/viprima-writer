@@ -39,6 +39,11 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
     std::wstring cmd=quote(engine.wstring())+L" -env:UserInstallation=$SYSUSERCONFIG/ViPrima/WriterDev --writer --nofirststartwizard";
     for(int i=1;i<argc;++i) {
         fs::path file(argv[i]);
+        // Reject UNC/device paths and mapped network drives before touching the file.
+        const auto raw=file.wstring();
+        if(raw.size()<3 || !((raw[0]>=L'A' && raw[0]<=L'Z') || (raw[0]>=L'a' && raw[0]<=L'z')) || raw[1]!=L':' || (raw[2]!=L'\\' && raw[2]!=L'/') || GetDriveTypeW(file.root_path().c_str())!=DRIVE_FIXED) {
+            LocalFree(argv); return fail(L"Open a document stored on a local fixed drive.");
+        }
         if(!file.is_absolute() || !fs::is_regular_file(file,ec)) { LocalFree(argv); return fail(L"Only existing absolute local document paths are accepted."); }
         auto ext=file.extension().wstring();
         for(auto& c:ext) c=static_cast<wchar_t>(towlower(c));
