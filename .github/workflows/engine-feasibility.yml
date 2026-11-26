@@ -1,0 +1,61 @@
+name: M1 - LibreOffice engine feasibility
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/engine-feasibility.yml'
+permissions:
+  contents: read
+jobs:
+  engine:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Install upstream LibreOffice for evaluation only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install libreoffice-fresh --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Engine installation failed' }
+          $lo = Join-Path $env:ProgramFiles 'LibreOffice\program\soffice.com'
+          if (!(Test-Path $lo)) { throw 'LibreOffice missing' }
+          & $lo --version
+          if ($LASTEXITCODE -ne 0) { throw 'Version check failed' }
+      - name: Generate synthetic fixture and test DOCX round trip and PDF
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lo = Join-Path $env:ProgramFiles 'LibreOffice\program\soffice.com'
+          $root = Join-Path $env:RUNNER_TEMP 'viprima-engine-probe'
+          New-Item -ItemType Directory -Force -Path "$root\input","$root\docx","$root\roundtrip","$root\pdf" | Out-Null
+          $html = '<html><body><h1>ViPrima engine probe</h1><p><b>Bold test</b> and <i>italic test</i>.</p><table border="1"><tr><td>Cell A</td><td>Cell B</td></tr></table></body></html>'
+          Set-Content -Encoding utf8 "$root\input\fixture.html" $html
+          $profile = ([System.Uri]::new("$root\profile")).AbsoluteUri
+          function Convert-Document($source,$format,$out,$expected) {
+            & $lo "-env:UserInstallation=$profile" --headless --convert-to $format --outdir $out $source
+            if ($LASTEXITCODE -ne 0 -or !(Test-Path $expected) -or (Get-Item $expected).Length -eq 0) { throw "Conversion failed: $format" }
+          }
+          Convert-Document "$root\input\fixture.html" 'docx:Office Open XML Text' "$root\docx" "$root\docx\fixture.docx"
+          Convert-Document "$root\docx\fixture.docx" 'docx:Office Open XML Text' "$root\roundtrip" "$root\roundtrip\fixture.docx"
+          Convert-Document "$root\roundtrip\fixture.docx" 'pdf:writer_pdf_Export' "$root\pdf" "$root\pdf\fixture.pdf"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($file in @("$root\docx\fixture.docx","$root\roundtrip\fixture.docx")) {
+            $zip = [IO.Compression.ZipFile]::OpenRead($file)
+            try {
+              $entry = $zip.GetEntry('word/document.xml')
+              if (!$entry) { throw 'Missing document XML' }
+              $reader = [IO.StreamReader]::new($entry.Open())
+              try { [xml]$xml = $reader.ReadToEnd() } finally { $reader.Dispose() }
+              $ns = [Xml.XmlNamespaceManager]::new($xml.NameTable)
+              $ns.AddNamespace('w','http://schemas.openxmlformats.org/wordprocessingml/2006/main')
+              $texts = ($xml.SelectNodes('//w:t',$ns) | ForEach-Object { $_.InnerText }) -join ' '
+              foreach ($token in @('ViPrima engine probe','Bold test','italic test','Cell A','Cell B')) { if (!$texts.Contains($token)) { throw "Missing content: $token" } }
+              foreach ($xpath in @('//w:tbl','//w:rPr/w:b','//w:rPr/w:i')) { if (!$xml.SelectSingleNode($xpath,$ns)) { throw "Missing structure: $xpath" } }
+            } finally { $zip.Dispose() }
+          }
+          $bytes = [IO.File]::ReadAllBytes("$root\pdf\fixture.pdf")
+          if ([Text.Encoding]::ASCII.GetString($bytes,0,5) -ne '%PDF-') { throw 'Invalid PDF signature' }
+          Get-ChildItem "$root\docx","$root\roundtrip","$root\pdf" -File | Get-FileHash -Algorithm SHA256 | Format-Table
+          '### M1a: Basic upstream engine conversion smoke test passed' >> $env:GITHUB_STEP_SUMMARY
+          'Not visual fidelity, offline network isolation, integration, installer, or source compilation validation.' >> $env:GITHUB_STEP_SUMMARY
