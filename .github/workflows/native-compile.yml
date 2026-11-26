@@ -49,3 +49,58 @@ jobs:
           if (!(Test-Path D:\lo\instdir\program\soffice.exe)) { throw 'Native executable missing' }
           Get-FileHash D:\lo\instdir\program\soffice.exe -Algorithm SHA256
           'Native compilation passed; not a production release.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Stage compiled runtime and build launcher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force stage\runtime | Out-Null
+          Copy-Item D:\lo\instdir\* stage\runtime -Recurse -Force
+          if (!(Test-Path stage\runtime\program\soffice.com)) { throw 'Runtime incomplete' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'VS2022 missing' }
+          $dev = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          $command = 'call "' + $dev + '" -arch=x64 -host_arch=x64 && cl /nologo /std:c++17 /EHsc /W4 /O2 /MT src\windows\launcher.cpp /Fe:stage\ViPrimaWriter.exe /link /SUBSYSTEM:WINDOWS shell32.lib user32.lib'
+          & cmd.exe /d /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher failed' }
+          Copy-Item D:\lo\COPYING stage\runtime\UPSTREAM-COPYING.txt
+          @('ViPrima Writer development preview 0.1.0','Experimental; not for confidential or production documents.','Derived from LibreOffice core 861effc5289d539f15c4c18d1ba8579ffd78728b.','Upstream source: https://github.com/LibreOffice/core/tree/861effc5289d539f15c4c18d1ba8579ffd78728b','Modification source: https://github.com/mayankkr1570-beep/viprima-writer','Preserve all upstream license and attribution files. Redistribution review remains pending.','Unsigned; offline isolation and GUI acceptance not yet verified.') | Set-Content stage\NOTICE.txt
+      - name: Test staged runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $program = (Resolve-Path stage\runtime\program).Path
+          & "$program\soffice.com" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime version failed' }
+          & "$program\python.exe" tests/engine/uno_edit_probe.py "$program\soffice.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Staged runtime editing failed' }
+      - name: Build development setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (!(Test-Path $iscc)) { throw 'Inno Setup compiler missing' }
+          & $iscc installer/viprima-dev.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+          $setup = (Resolve-Path dist\ViPrima_Writer_v0.1.0_Development_Setup_x64.exe).Path
+          Get-FileHash $setup -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $([IO.Path]::GetFileName($_.Path))" } | Set-Content dist\SHA256SUMS.txt
+      - name: Test silent install and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Resolve-Path dist\ViPrima_Writer_v0.1.0_Development_Setup_x64.exe).Path
+          $target = Join-Path $env:RUNNER_TEMP 'ViPrimaInstallTest'
+          $p = Start-Process $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$target") -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or !(Test-Path "$target\ViPrimaWriter.exe")) { throw 'Install test failed' }
+          & "$target\runtime\program\soffice.com" --version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed runtime failed' }
+          $uninstall = Get-ChildItem $target -Filter 'unins*.exe' | Select-Object -First 1
+          if (!$uninstall) { throw 'Uninstaller missing' }
+          $p = Start-Process $uninstall.FullName -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or (Test-Path "$target\ViPrimaWriter.exe")) { throw 'Uninstall test failed' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ViPrima-Writer-0.1.0-internal-dev
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
