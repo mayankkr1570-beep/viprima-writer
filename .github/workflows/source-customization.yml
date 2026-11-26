@@ -1,0 +1,55 @@
+name: M1c - Source customization and VS2022 probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/source-customization.yml'
+      - 'engine/customize_ribbon.py'
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Validate customization on exact upstream source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $revision = '861effc5289d539f15c4c18d1ba8579ffd78728b'
+          $root = Join-Path $env:RUNNER_TEMP 'lo-source'
+          git init $root
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git -C $root remote add origin https://github.com/LibreOffice/core.git
+          git -C $root config core.sparseCheckout true
+          'sw/uiconfig/swriter/ui/notebookbar.ui' | Set-Content -Encoding ascii "$root\.git\info\sparse-checkout"
+          git -C $root fetch --depth=1 --filter=blob:none origin $revision
+          if ($LASTEXITCODE -ne 0) { throw 'Source fetch failed' }
+          git -C $root checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source checkout failed' }
+          python engine/customize_ribbon.py $root
+          if ($LASTEXITCODE -ne 0) { throw 'Customization failed' }
+          git -C $root diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Patch validation failed' }
+          git -C $root diff --stat
+          git -C $root diff
+          'Native ribbon patch applied and XML/command invariants checked. Not compiled.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Check VS2022 and WSL availability
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -all -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json
+          $vs | Select-Object installationVersion,installationPath | Format-Table
+          $has = @($vs | Where-Object { $_.installationVersion -like '17.*' }).Count -gt 0
+          "VS2022 detected: $has" >> $env:GITHUB_STEP_SUMMARY
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name,Used,Free
+          if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+            & wsl.exe --list --verbose
+            & wsl.exe --status
+          }
+          'Toolchain inventory only; no source compilation or installer.' >> $env:GITHUB_STEP_SUMMARY
+          exit 0
