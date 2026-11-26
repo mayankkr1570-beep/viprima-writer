@@ -1,0 +1,51 @@
+name: M2 - Native source compilation
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-compile.yml'
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: windows-2022
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install Cygwin build prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Join-Path $env:RUNNER_TEMP 'setup-x86_64.exe'
+          Invoke-WebRequest https://cygwin.com/setup-x86_64.exe -OutFile $setup
+          $signature = Get-AuthenticodeSignature $setup
+          if ($signature.Status -ne 'Valid') { throw 'Cygwin installer signature not valid' }
+          $p = Start-Process $setup -ArgumentList '-q -B -R D:\cygwin -s https://mirrors.kernel.org/sourceware/cygwin/ -l D:\cygcache -P autoconf,automake,make,git,perl,python3,pkg-config,patch,diffutils,findutils,grep,sed,gawk,zip,unzip,bison,flex,curl,wget,rsync,tar,xz,which,libxml2-devel,libxslt-devel' -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or !(Test-Path D:\cygwin\bin\bash.exe)) { throw 'Cygwin setup failed' }
+      - name: Fetch pinned source and apply native UI changes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git init D:\lo
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git -C D:\lo config core.autocrlf false
+          git -C D:\lo config core.longpaths true
+          git -C D:\lo remote add origin https://github.com/LibreOffice/core.git
+          git -C D:\lo fetch --depth=1 origin 861effc5289d539f15c4c18d1ba8579ffd78728b
+          if ($LASTEXITCODE -ne 0) { throw 'Source fetch failed' }
+          git -C D:\lo checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source checkout failed' }
+          python engine/customize_ribbon.py D:\lo
+          if ($LASTEXITCODE -ne 0) { throw 'UI patch failed' }
+      - name: Configure and compile native Windows engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & D:\cygwin\bin\bash.exe -lc 'set -e; cd /cygdrive/d/lo; ./autogen.sh --host=x86_64-pc-cygwin --with-visual-studio=2022 --disable-ccache --without-java --without-junit --without-doxygen --disable-online-update --enable-python=fully-internal; make -j4'
+          if ($LASTEXITCODE -ne 0) { throw 'Native source build failed; inspect configure/build log' }
+          if (!(Test-Path D:\lo\instdir\program\soffice.exe)) { throw 'Native executable missing' }
+          Get-FileHash D:\lo\instdir\program\soffice.exe -Algorithm SHA256
+          'Native compilation passed; not a production release.' >> $env:GITHUB_STEP_SUMMARY
