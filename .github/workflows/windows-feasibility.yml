@@ -1,0 +1,33 @@
+name: M0 - Windows build feasibility
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-feasibility.yml'
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Inspect Windows and compile x64 smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture | Format-List
+          Get-CimInstance Win32_ComputerSystem | Select-Object NumberOfLogicalProcessors, TotalPhysicalMemory | Format-List
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (!(Test-Path $vswhere)) { throw 'Visual Studio discovery tool missing' }
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'MSVC x64 tools missing' }
+          $dev = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          'int main() { return sizeof(void*) == 8 ? 0 : 1; }' | Set-Content -Encoding ascii probe.cpp
+          $command = 'call "' + $dev + '" -arch=x64 -host_arch=x64 && cl /nologo /EHsc probe.cpp /Fe:probe.exe && probe.exe'
+          & cmd.exe /d /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'Native x64 build or execution failed' }
+          Get-FileHash probe.exe -Algorithm SHA256 | Format-List
+          '### M0: Native x64 smoke test passed' >> $env:GITHUB_STEP_SUMMARY
+          'Not a document engine test or product release.' >> $env:GITHUB_STEP_SUMMARY
