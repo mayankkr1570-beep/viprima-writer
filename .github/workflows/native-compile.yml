@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/native-compile.yml'
+concurrency:
+  group: native-compile-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -25,6 +28,16 @@ jobs:
           if ($signature.Status -ne 'Valid') { throw 'Cygwin installer signature not valid' }
           $p = Start-Process $setup -ArgumentList '-q -B -R D:\cygwin -s https://mirrors.kernel.org/sourceware/cygwin/ -l D:\cygcache -P autoconf,automake,make,git,perl,python3,pkg-config,patch,diffutils,findutils,grep,sed,gawk,zip,unzip,bison,flex,curl,wget,rsync,tar,xz,which,libxml2-devel,libxslt-devel' -Wait -PassThru
           if ($p.ExitCode -ne 0 -or !(Test-Path D:\cygwin\bin\bash.exe)) { throw 'Cygwin setup failed' }
+      - name: Provision verified native Windows pkgconf
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force D:\lo-tools | Out-Null
+          $pkg = 'D:\lo-tools\pkgconf-2.4.3.exe'
+          Invoke-WebRequest 'https://dev-www.libreoffice.org/extern/pkgconf-2.4.3.exe' -OutFile $pkg
+          if ((Get-FileHash $pkg -Algorithm SHA256).Hash -ne '791cd6dbc56f7268fbf9c4652d6634b0f5c59687ab4e504565e58245952edd41') { throw 'pkgconf SHA256 mismatch' }
+          & $pkg --version
+          if ($LASTEXITCODE -ne 0) { throw 'Native pkgconf failed' }
       - name: Fetch pinned source and apply native UI changes
         shell: pwsh
         run: |
@@ -44,7 +57,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          & D:\cygwin\bin\bash.exe -lc 'set -e; cd /cygdrive/d/lo; ./autogen.sh --host=x86_64-pc-cygwin --with-visual-studio=2022 --disable-ccache --without-java --without-junit --without-doxygen --disable-online-update --enable-python=fully-internal; make -j4'
+          & D:\cygwin\bin\bash.exe -lc 'set -e; cd /cygdrive/d/lo; PKG_CONFIG=/cygdrive/d/lo-tools/pkgconf-2.4.3.exe ./autogen.sh --host=x86_64-pc-cygwin --with-visual-studio=2022 --disable-ccache --without-java --without-junit --without-doxygen --disable-online-update --enable-python=fully-internal; make -j4'
           if ($LASTEXITCODE -ne 0) { throw 'Native source build failed; inspect configure/build log' }
           if (!(Test-Path D:\lo\instdir\program\soffice.exe)) { throw 'Native executable missing' }
           Get-FileHash D:\lo\instdir\program\soffice.exe -Algorithm SHA256
