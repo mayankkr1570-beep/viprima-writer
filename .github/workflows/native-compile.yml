@@ -40,6 +40,33 @@ jobs:
           if ((Get-FileHash $pkg -Algorithm SHA256).Hash -ne '791cd6dbc56f7268fbf9c4652d6634b0f5c59687ab4e504565e58245952edd41') { throw 'pkgconf SHA256 mismatch' }
           & $pkg --version
           if ($LASTEXITCODE -ne 0) { throw 'Native pkgconf failed' }
+      - name: Provision native NASM and validate toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nasm --version=2.16.3 --yes --no-progress --require-checksums
+          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          $candidates = @("$env:ProgramFiles\NASM\nasm.exe","${env:ProgramFiles(x86)}\NASM\nasm.exe","$env:LOCALAPPDATA\bin\NASM\nasm.exe","$env:ChocolateyInstall\bin\nasm.exe")
+          $nasm = $candidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+          if (!$nasm) { throw 'Native NASM executable not found after installation' }
+          $dir = Split-Path $nasm
+          $dir >> $env:GITHUB_PATH
+          $env:PATH = "$dir;$env:PATH"
+          & $nasm -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native NASM version check failed' }
+          & D:\cygwin\bin\bash.exe -lc 'set -e; for tool in autoconf automake make git perl python3 gperf bison flex patch wget zip unzip tar shasum nasm; do command -v "$tool" || exit 1; done; nasm -v; cmd.exe /d /c "where nasm && nasm -v"'
+          if ($LASTEXITCODE -ne 0) { throw 'Build tool visibility check failed' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'VS2022 C++ tools missing' }
+          $dev = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+          $cmd = 'call "' + $dev + '" -arch=x64 -host_arch=x64 && where cl && where nmake && where nasm && nasm -v'
+          & cmd.exe /d /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC/NASM tool visibility check failed' }
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (!(Test-Path $iscc)) { throw 'Inno Setup compiler missing' }
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name,Used,Free
+          'Native toolchain and installer compiler preflight passed.' >> $env:GITHUB_STEP_SUMMARY
       - name: Fetch pinned source and apply native UI changes
         shell: pwsh
         run: |
